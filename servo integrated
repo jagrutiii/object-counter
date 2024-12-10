@@ -1,0 +1,132 @@
+#include <WebServer.h>
+#include <WiFi.h>
+#include <esp32cam.h>
+#include <Servo.h>
+
+const char* WIFI_SSID = "ssid";
+const char* WIFI_PASS = "password";
+
+WebServer server(80);
+Servo myServo;
+
+const int servoPin = 14; // Define the GPIO pin for the servo
+int currentAngle = 0;    // Initial servo angle
+bool objectProcessed = false; // Flag to indicate object processing
+
+static auto loRes = esp32cam::Resolution::find(320, 240);
+static auto midRes = esp32cam::Resolution::find(350, 530);
+static auto hiRes = esp32cam::Resolution::find(800, 600);
+
+// Function to serve captured JPEG
+void serveJpg()
+{
+  auto frame = esp32cam::capture();
+  if (frame == nullptr) {
+    Serial.println("CAPTURE FAIL");
+    server.send(503, "", "");
+    return;
+  }
+  Serial.printf("CAPTURE OK %dx%d %db\n", frame->getWidth(), frame->getHeight(),
+                static_cast<int>(frame->size()));
+
+  server.setContentLength(frame->size());
+  server.send(200, "image/jpeg");
+  WiFiClient client = server.client();
+  frame->writeTo(client);
+}
+
+// Resolution handlers
+void handleJpgLo()
+{
+  if (!esp32cam::Camera.changeResolution(loRes)) {
+    Serial.println("SET-LO-RES FAIL");
+  }
+  serveJpg();
+}
+
+void handleJpgHi()
+{
+  if (!esp32cam::Camera.changeResolution(hiRes)) {
+    Serial.println("SET-HI-RES FAIL");
+  }
+  serveJpg();
+}
+
+void handleJpgMid()
+{
+  if (!esp32cam::Camera.changeResolution(midRes)) {
+    Serial.println("SET-MID-RES FAIL");
+  }
+  serveJpg();
+}
+
+// Function to move the servo
+void moveServo180()
+{
+  Serial.println("Moving servo for 180-degree sweep...");
+  for (int angle = 0; angle <= 180; angle += 10) { // Move from 0 to 180 degrees
+    myServo.write(angle);
+    delay(50);
+  }
+  for (int angle = 180; angle >= 0; angle -= 10) { // Move back to 0 degrees
+    myServo.write(angle);
+    delay(50);
+  }
+  Serial.println("Servo sweep complete.");
+}
+
+void setup()
+{
+  Serial.begin(115200);
+  Serial.println();
+
+  // Initialize servo
+  myServo.attach(servoPin);
+  myServo.write(currentAngle); // Start at initial position
+
+  // Initialize camera
+  using namespace esp32cam;
+  Config cfg;
+  cfg.setPins(pins::AiThinker);
+  cfg.setResolution(hiRes);
+  cfg.setBufferCount(2);
+  cfg.setJpeg(80);
+
+  bool ok = Camera.begin(cfg);
+  Serial.println(ok ? "CAMERA OK" : "CAMERA FAIL");
+
+  // Initialize Wi-Fi
+  WiFi.persistent(false);
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASS);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+  }
+  Serial.print("http://");
+  Serial.println(WiFi.localIP());
+  Serial.println("  /cam-lo.jpg");
+  Serial.println("  /cam-hi.jpg");
+  Serial.println("  /cam-mid.jpg");
+
+  // Set up server endpoints
+  server.on("/cam-lo.jpg", handleJpgLo);
+  server.on("/cam-hi.jpg", handleJpgHi);
+  server.on("/cam-mid.jpg", handleJpgMid);
+
+  server.begin();
+}
+
+void loop()
+{
+  server.handleClient();
+
+  // Simulate object processing logic
+  if (!objectProcessed) {
+    Serial.println("Processing object in the frame...");
+    delay(2000); // Simulate processing time
+    objectProcessed = true; // Mark processing as complete
+
+    // After processing, perform servo movement
+    moveServo180();
+  }
+}
